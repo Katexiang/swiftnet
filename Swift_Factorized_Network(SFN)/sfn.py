@@ -1,0 +1,442 @@
+import tensorflow as tf
+import math
+import numpy as np
+
+
+
+
+
+def conv(inputs,filters,kernel_size,strides=(1, 1),padding='SAME',dilation_rate=(1, 1),activation=tf.nn.relu,use_bias=None,regularizer=None,name=None,reuse=None):
+    out=tf.layers.conv2d(
+    inputs,
+    filters=filters,
+    kernel_size=kernel_size,
+    strides=strides,
+    padding=padding,
+    dilation_rate=dilation_rate,
+    activation=activation,
+    use_bias=use_bias,
+    kernel_regularizer=regularizer,
+    bias_initializer=tf.zeros_initializer(),
+    kernel_initializer= tf.random_normal_initializer(stddev=0.1),
+    name=name,
+    reuse=reuse)
+    return out
+
+
+# In[3]:
+
+
+def batch(inputs,training=True,reuse=None,momentum=0.9,name='n'):
+    out=tf.layers.batch_normalization(inputs,training=training,reuse=reuse,momentum=momentum,name=name)
+    return out
+
+
+# In[4]:
+
+
+def branch1(x,numOut,l2,stride=1,is_training=True,momentum=0.9,reuse=None):
+    reg = None if l2 is None else tf.contrib.layers.l2_regularizer(scale=l2)
+    with tf.variable_scope("conv1"):
+        y = conv(x, numOut, kernel_size=[3, 3],activation=None,strides=(stride,stride),name='conv',regularizer=reg,reuse=reuse)
+        y = tf.nn.relu(batch(y,training=is_training,reuse=reuse,momentum=momentum,name='bn'))
+    with tf.variable_scope("conv2"):
+        y = conv(y, numOut, kernel_size=[3, 3],activation=None,regularizer=reg,name='conv',reuse=reuse)
+        y = batch(y,training=is_training,reuse=reuse,momentum=momentum,name='bn')
+    return y
+
+
+# In[5]:
+
+
+def branch2(x,numOut,l2,stride=1,is_training=True,momentum=0.9,reuse=None):
+    reg = None if l2 is None else tf.contrib.layers.l2_regularizer(scale=l2)
+    with tf.variable_scope("convshortcut"):
+        y = conv(x, numOut, kernel_size=[1, 1],activation=None,strides=(stride,stride),name='conv',regularizer=reg,reuse=reuse)
+        y = batch(y,training=is_training,reuse=reuse,momentum=momentum,name='bn')
+        return y
+
+
+# In[6]:
+
+
+def residual(x,numOut,l2,stride=1,is_training=True,reuse=None,momentum=0.9,branch=False,name='res'):
+    with tf.variable_scope(name):
+        block = branch1(x,numOut,l2,stride=stride,is_training=is_training,momentum=momentum,reuse=reuse)
+        if x.get_shape().as_list()[3] != numOut or branch:
+            skip = branch2(x, numOut,l2,stride=stride,is_training=is_training,momentum=momentum,reuse=reuse)
+            return tf.nn.relu(block+skip),block+skip
+        else:
+            return  tf.nn.relu(x+block),x+block
+
+
+# In[7]:
+
+
+def resnet18(x, is_training,l2=None,dropout=0.05,reuse=None,momentum=0.9,name='Resnet18'):
+    feature=[]
+    with tf.variable_scope(name):
+        reg = None if l2 is None else tf.contrib.layers.l2_regularizer(scale=l2/4)
+        y=conv(x, 64, kernel_size=[7, 7],activation=None,strides=2,name='conv0',regularizer=reg,reuse=reuse)
+        y=tf.nn.relu(batch(y,training=is_training,reuse=reuse,momentum=momentum,name='conv0/bn'))
+        y=tf.nn.max_pool(y,ksize=[1,3,3,1],strides=[1,2,2,1],padding='SAME',name='pool1')
+        with tf.variable_scope('group0'):
+            res2a,t=residual(y,64,l2,branch=True,reuse=reuse,is_training=is_training,name='block0')
+            res2b,t=residual(res2a,64,l2,reuse=reuse,is_training=is_training,name='block1')
+            feature.append(t)
+        with tf.variable_scope('group1'):
+            res3a,t=residual(res2b,128,l2,stride=2,reuse=reuse,is_training=is_training,name='block0')
+            res3b,t=residual(res3a,128,l2,reuse=reuse,is_training=is_training,name='block1')
+            feature.append(t)
+        with tf.variable_scope('group2'):
+            res4a,t=residual(res3b,256,l2,stride=2,reuse=reuse,is_training=is_training,name='block0')
+            res4b,t=residual(res4a,256,l2,reuse=reuse,is_training=is_training,name='block1')
+            feature.append(t)
+        with tf.variable_scope('group3'):
+            res5a,t=residual(res4b,512,l2,stride=2,reuse=reuse,is_training=is_training,name='block0')
+            res5b,t=residual(res5a,512,l2,reuse=reuse,is_training=is_training,name='block1')
+            feature.append(t)
+        #pool5=tf.reduce_mean(res5b, [1, 2],keepdims=True)
+        #dropout = tf.layers.dropout(pool5,rate=dropout,training=is_training)
+        #y=conv(dropout, 1000, kernel_size=[1, 1],activation=None,name='class',use_bias=True,regularizer=reg,reuse=reuse)
+        #y=conv(y, 512, kernel_size=[1, 1],activation=None,name='attention',use_bias=None,regularizer=reg,reuse=reuse)
+        #y=tf.nn.sigmoid(batch(y,training=is_training,reuse=reuse,momentum=momentum,name='attentionbn'))		
+        #y=res5b*y+res5b
+        #feature.append(y)
+    return y,feature
+
+def erfupsample(x,skip,is_training,shape=[512,512],kernal=3,stage=0,l2=None,reuse=None,momentum=0.9,name='up0'):
+    height=int(shape[0]//math.pow(2,5-stage))
+    weight=int(shape[1]//math.pow(2,5-stage))
+    with tf.variable_scope(name):
+        reg = None if l2 is None else tf.contrib.layers.l2_regularizer(scale=l2)
+        skip=tf.nn.relu(batch(skip,training=is_training,reuse=reuse,momentum=momentum,name='skipbn'))
+        skip = conv(skip,128,kernel_size=1,activation=None,name='changedemesion',regularizer=reg,reuse=reuse)
+        x=tf.image.resize_images(x, [height,weight],method=0,align_corners=True)
+        skip=x+skip
+        skip=tf.nn.relu(batch(skip,training=is_training,reuse=reuse,momentum=momentum,name='blendbn0'))
+        skip1=conv(skip,128,kernel_size=[kernal,1],activation=None,name='skipconv1a',regularizer=reg,reuse=reuse)
+        skip1=conv(skip1,128,kernel_size=[1,kernal],activation=None,name='skipconv1b',regularizer=reg,reuse=reuse)
+        skip2=conv(skip,128,kernel_size=[1,kernal],activation=None,name='skipconv2a',regularizer=reg,reuse=reuse)
+        skip2=conv(skip2,128,kernel_size=[kernal,1],activation=None,name='skipconv2b',regularizer=reg,reuse=reuse)
+        x=skip+skip1+skip2
+        x=tf.nn.relu(batch(x,training=is_training,reuse=reuse,momentum=momentum,name='blendbn'))
+        x=conv(x, 128, kernel_size=3,activation=None,name='blendconv',regularizer=reg,reuse=reuse)
+        #pool5=tf.reduce_mean(x, [1, 2],keepdims=True)
+        #y=conv(pool5, 128, kernel_size=[1, 1],activation=None,name='attention',use_bias=None,regularizer=reg,reuse=reuse)
+        #y=tf.nn.sigmoid(batch(y,training=is_training,reuse=reuse,momentum=momentum,name='attentionbn'))		
+        #x=x*y+x
+        return x
+
+
+def SpatialPyramidPooling(x, is_training,shape=[512,512],grids=(8, 4, 2,1),l2=None,reuse=None,momentum=0.9,name='spp'):
+    levels=[]
+    height=shape[0]//32
+    weight=shape[1]//32
+    with tf.variable_scope(name):
+        reg = None if l2 is None else tf.contrib.layers.l2_regularizer(scale=l2)
+        x=tf.nn.relu(batch(x,training=is_training,reuse=reuse,momentum=momentum,name='bn0'))
+        x=conv(x, 128, kernel_size=1,activation=None,name='conv0',regularizer=reg,reuse=reuse)
+        levels.append(x)
+        for i in range(len(grids)):
+            h=math.floor(height/grids[i])
+            w=math.floor(weight/grids[i])
+            kh=height-(grids[i]-1) * h
+            kw=weight-(grids[i]-1) * w
+            y=tf.nn.avg_pool(x,[1,kh,kw,1],[1,h,w,1],padding='VALID')
+            y=tf.nn.relu(batch(y,training=is_training,reuse=reuse,momentum=momentum,name='bn'+str(i+1)))
+            y=conv(y, 32, kernel_size=1,activation=None,name='conv'+str(i+1),regularizer=reg,reuse=reuse)
+            y=tf.image.resize_images(y, [height,weight],method=0,align_corners=True)
+            levels.append(y)
+        final=tf.concat(levels,-1)
+        final=tf.nn.relu(batch(final,training=is_training,reuse=reuse,momentum=momentum,name='blendbn'))
+        final=conv(final, 128, kernel_size=1,activation=None,name='blendconv',regularizer=reg,reuse=reuse)
+        final=tf.nn.relu(batch(final,training=is_training,reuse=reuse,momentum=momentum,name='finalbn'))
+    return final
+
+
+
+
+
+
+def swiftnet(x, numclass,is_training,shape,l2=None,dropout=0.05,reuse=None,momentum=0.9):
+    xclass,feature=resnet18(x, is_training,l2,dropout=dropout,reuse=reuse,momentum=momentum,name='Resnet18')
+    x=SpatialPyramidPooling(feature[-1], is_training,shape=shape,grids=(8, 4, 2, 1),l2=l2,reuse=reuse,momentum=momentum,name='spp')
+    x=erfupsample(x,feature[-2],is_training,shape=shape,kernal=3,stage=1,l2=l2,reuse=reuse,momentum=momentum,name='up1')
+    x=erfupsample(x,feature[-3],is_training,shape=shape,kernal=5,stage=2,l2=l2,reuse=reuse,momentum=momentum,name='up2')
+    x=erfupsample(x,feature[-4],is_training,shape=shape,kernal=7,stage=3,l2=l2,reuse=reuse,momentum=momentum,name='up3')
+    #with tf.variable_scope('class'):
+    #    reg = None if l2 is None else tf.contrib.layers.l2_regularizer(scale=l2)
+    #    x=tf.nn.relu(batch(x,training=is_training,reuse=reuse,momentum=momentum,name='classbn'))
+    #    x=conv(x, numclass, kernel_size=3,activation=None,name='classconv',regularizer=reg,reuse=reuse)
+    #    x=tf.image.resize_images(x, [shape[0],shape[1]],method=0,align_corners=True)
+    #    final=tf.nn.softmax(x, name='logits_to_softmax')
+
+    x=tf.nn.relu(batch(x,training=is_training,reuse=reuse,momentum=momentum,name='classbn'))
+    with tf.variable_scope("gcn",reuse=reuse):
+        ADJ=tf.constant([
+    [1.        , 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556],
+       [0.05555556, 1.        , 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556],
+       [0.        , 0.        , 1.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.1       , 0.1       ,
+        0.1       , 0.1       , 0.1       , 0.1       , 0.1       ,
+        0.1       , 0.1       , 0.1       , 0.        ],
+       [0.05555556, 0.05555556, 0.05555556, 1.        , 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556],
+       [0.05555556, 0.05555556, 0.05555556, 0.05555556, 1.        ,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556],
+       [0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        1.        , 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556],
+       [0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 1.        , 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556],
+       [0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 1.        , 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 1.        , 0.        ,
+        0.2       , 0.2       , 0.        , 0.        , 0.2       ,
+        0.2       , 0.2       , 0.        , 0.        ],
+       [0.        , 0.        , 0.1       , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.1       , 1.        ,
+        0.1       , 0.1       , 0.1       , 0.1       , 0.1       ,
+        0.1       , 0.1       , 0.1       , 0.        ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.2       , 0.        ,
+        1.        , 0.2       , 0.        , 0.        , 0.2       ,
+        0.2       , 0.2       , 0.        , 0.        ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.2       , 0.        ,
+        0.2       , 1.        , 0.        , 0.        , 0.2       ,
+        0.2       , 0.2       , 0.        , 0.        ],
+       [0.        , 0.        , 0.1       , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.1       , 0.1       ,
+        0.1       , 0.1       , 1.        , 0.1       , 0.1       ,
+        0.1       , 0.1       , 0.1       , 0.        ],
+       [0.        , 0.        , 0.1       , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.1       , 0.1       ,
+        0.1       , 0.1       , 0.1       , 1.        , 0.1       ,
+        0.1       , 0.1       , 0.1       , 0.        ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.2       , 0.        ,
+        0.2       , 0.2       , 0.        , 0.        , 1.        ,
+        0.2       , 0.2       , 0.        , 0.        ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.2       , 0.        ,
+        0.2       , 0.2       , 0.        , 0.        , 0.2       ,
+        1.        , 0.2       , 0.        , 0.        ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.2       , 0.        ,
+        0.2       , 0.2       , 0.        , 0.        , 0.2       ,
+        0.2       , 1.        , 0.        , 0.        ],
+       [0.        , 0.        , 0.1       , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.1       , 0.1       ,
+        0.1       , 0.1       , 0.1       , 0.1       , 0.1       ,
+        0.1       , 0.1       , 1.        , 0.        ],
+       [0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 0.05555556, 0.05555556,
+        0.05555556, 0.05555556, 0.05555556, 1.        ]], dtype=tf.float32)
+
+
+        label=tf.constant(
+        [[1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1.]],dtype=tf.float32)
+        weight1=tf.get_variable(name='weight1', shape=[19,256], initializer=tf.contrib.layers.xavier_initializer())
+        bias1=tf.get_variable(name='bias1', shape=[256,], initializer=tf.contrib.layers.xavier_initializer())
+        h1=tf.nn.leaky_relu(tf.matmul(ADJ,tf.matmul(label,weight1))+bias1)
+        weight2=tf.get_variable(name='weight2', shape=[256,256], initializer=tf.contrib.layers.xavier_initializer())
+        bias2=tf.get_variable(name='bias2', shape=[256,], initializer=tf.contrib.layers.xavier_initializer())
+        h1=tf.nn.leaky_relu(tf.matmul(ADJ,tf.matmul(h1,weight2))+bias2)
+        weight3=tf.get_variable(name='weight3', shape=[256,128], initializer=tf.contrib.layers.xavier_initializer())
+        bias3=tf.get_variable(name='bias3', shape=[128,], initializer=tf.contrib.layers.xavier_initializer())
+        clas=tf.transpose(tf.nn.leaky_relu(tf.matmul(ADJ,tf.matmul(h1,weight3))+bias3),[1,0])
+        x=tf.reshape(x,[-1,128])
+        x=tf.matmul(x,clas)		
+        x=tf.reshape(x,[-1,shape[0]//4,shape[1]//4,numclass])
+        x=tf.image.resize_images(x, [shape[0],shape[1]],method=0)
+        final=tf.nn.softmax(x, name='logits_to_softmax')
+
+
+    return x,final
+
+
+'''
+    x=tf.nn.relu(batch(x,training=is_training,reuse=reuse,momentum=momentum,name='classbn'))
+    with tf.variable_scope("gcn",reuse=reuse):
+        ADJ=tf.constant([[1.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.25      , 0.        ,
+        0.        , 0.        , 0.        , 0.25      , 0.        ,
+        0.        , 0.25      , 0.        , 0.25      ],
+       [0.        , 1.        , 0.        , 0.        , 0.        ,
+        0.        , 0.25      , 0.25      , 0.25      , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.25      , 0.        ],
+       [0.14285714, 0.        , 1.        , 0.14285714, 0.14285714,
+        0.14285714, 0.        , 0.        , 0.14285714, 0.14285714,
+        0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.14285714],
+       [0.16666667, 0.        , 0.16666667, 1.        , 0.16666667,
+        0.16666667, 0.        , 0.        , 0.16666667, 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.16666667],
+       [0.16666667, 0.        , 0.16666667, 0.16666667, 1.        ,
+        0.16666667, 0.        , 0.        , 0.16666667, 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.16666667],
+       [0.2       , 0.        , 0.2       , 0.2       , 0.2       ,
+        1.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.2       ],
+       [0.        , 0.25      , 0.        , 0.        , 0.        ,
+        0.        , 1.        , 0.25      , 0.25      , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.25      , 0.        ],
+       [0.        , 0.25      , 0.        , 0.        , 0.        ,
+        0.        , 0.25      , 1.        , 0.25      , 0.        ,
+        0.        , 0.        , 0.        , 0.25      , 0.        ,
+        0.        , 0.        , 0.        , 0.        ],
+       [0.        , 0.1       , 0.1       , 0.1       , 0.1       ,
+        0.1       , 0.1       , 0.1       , 1.        , 0.1       ,
+        0.        , 0.        , 0.1       , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.1       ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.125     , 1.        ,
+        0.125     , 0.125     , 0.125     , 0.125     , 0.125     ,
+        0.125     , 0.        , 0.125     , 0.        ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.2       ,
+        1.        , 0.2       , 0.        , 0.        , 0.2       ,
+        0.2       , 0.2       , 0.        , 0.        ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.16666667,
+        0.16666667, 1.        , 0.16666667, 0.16666667, 0.16666667,
+        0.16666667, 0.        , 0.        , 0.        ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.16666667,
+        0.16666667, 0.16666667, 1.        , 0.16666667, 0.16666667,
+        0.16666667, 0.        , 0.        , 0.        ],
+       [0.16666667, 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.16666667,
+        0.16666667, 0.16666667, 0.16666667, 1.        , 0.        ,
+        0.        , 0.        , 0.        , 0.16666667],
+       [0.125     , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.125     ,
+        0.125     , 0.        , 0.125     , 0.125     , 1.        ,
+        0.125     , 0.125     , 0.        , 0.125     ],
+       [0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.16666667,
+        0.16666667, 0.16666667, 0.16666667, 0.16666667, 0.16666667,
+        1.        , 0.        , 0.        , 0.        ],
+       [0.2       , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.2       , 0.        , 0.        , 0.2       , 0.2       ,
+        0.        , 1.        , 0.        , 0.2       ],
+       [0.        , 0.5       , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 0.        , 0.        , 0.5       ,
+        0.        , 0.        , 0.        , 0.        , 0.        ,
+        0.        , 0.        , 1.        , 0.        ],
+       [0.11111111, 0.11111111, 0.11111111, 0.11111111, 0.11111111,
+        0.        , 0.11111111, 0.11111111, 0.11111111, 0.        ,
+        0.        , 0.        , 0.        , 0.11111111, 0.        ,
+        0.        , 0.        , 0.        , 1.        ]], dtype=tf.float32)
+
+
+        label=tf.constant(
+        [[1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0.],
+         [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1.]],dtype=tf.float32)
+        weight1=tf.get_variable(name='weight1', shape=[19,256], initializer=tf.contrib.layers.xavier_initializer())
+        bias1=tf.get_variable(name='bias1', shape=[256,], initializer=tf.contrib.layers.xavier_initializer())
+        h1=tf.nn.leaky_relu(tf.matmul(ADJ,tf.matmul(label,weight1))+bias1)
+        weight2=tf.get_variable(name='weight2', shape=[256,256], initializer=tf.contrib.layers.xavier_initializer())
+        bias2=tf.get_variable(name='bias2', shape=[256,], initializer=tf.contrib.layers.xavier_initializer())
+        h1=tf.nn.leaky_relu(tf.matmul(ADJ,tf.matmul(h1,weight2))+bias2)
+        weight3=tf.get_variable(name='weight3', shape=[256,128], initializer=tf.contrib.layers.xavier_initializer())
+        bias3=tf.get_variable(name='bias3', shape=[128,], initializer=tf.contrib.layers.xavier_initializer())
+        clas=tf.transpose(tf.nn.leaky_relu(tf.matmul(ADJ,tf.matmul(h1,weight3))+bias3),[1,0])
+        x=tf.reshape(x,[-1,128])
+        x=tf.matmul(x,clas)		
+        x=tf.reshape(x,[-1,shape[0]//4,shape[1]//4,numclass])
+        x=tf.image.resize_images(x, [shape[0],shape[1]],method=0)
+        final=tf.nn.softmax(x, name='logits_to_softmax')
+'''
+
+
+
+def load_weight(sess,resnet50_path,varss):
+    param = dict(np.load(resnet50_path))
+    for v in varss:
+        nameEnd = v.name.split('/')[-1]
+        if nameEnd == "moving_mean:0":
+            name =  v.name[9:-13]+"mean/EMA"
+        elif nameEnd == "moving_variance:0":
+            name = v.name[9:-17]+"variance/EMA"
+        elif nameEnd =='kernel:0':
+            if v.name.split('/')[1]=='conv0':
+                name='conv0/W'
+                b=np.expand_dims(param[name][:,:,0,:],2)
+                g=np.expand_dims(param[name][:,:,1,:],2)
+                r=np.expand_dims(param[name][:,:,2,:],2)
+                param[name]=np.concatenate([r,g,b],2)
+            elif v.name.split('/')[1]=='class':
+                name='linear/W'
+            else:
+                name=v.name[9:-13]+'W'
+        elif nameEnd=='gamma:0':
+            name=v.name[9:-2]
+        elif nameEnd=='beta:0':
+            name=v.name[9:-2]
+        else:
+            name='linear/b'
+        sess.run(v.assign(param[name]))
+        print("Copy weights: " + name + "---->"+ v.name)
+
+
