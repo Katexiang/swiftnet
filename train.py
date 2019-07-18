@@ -246,7 +246,7 @@ def run():
             T_=np.zeros((num_class), dtype=np.float32)			
             R_=np.zeros((num_class), dtype=np.float32)			
             for i in range(math.ceil(len(image_val) / eval_batch)):
-			    and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = eval_step(session,i+1)
+                and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = eval_step(session,i+1)
                 and_=and_+and_eval_batch
                 or_=or_+or_eval_batch
                 T_=T_+T_eval_batch
