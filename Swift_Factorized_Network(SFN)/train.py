@@ -27,13 +27,13 @@ flags.DEFINE_integer('num_epochs_before_decay', 200, 'The number of epochs befor
 flags.DEFINE_float('weight_decay', 1e-4, "The weight decay for ENet convolution layers.")
 flags.DEFINE_float('learning_rate_decay_factor', 0.6667, 'The learning rate decay factor.')
 flags.DEFINE_float('initial_learning_rate', 4e-4, 'The initial learning rate for your training.')
-flags.DEFINE_integer('Start_train',True, "The input height of the images.")
+flags.DEFINE_boolean('Start_train',True, "The input height of the images.")
 
 #
 
 FLAGS = flags.FLAGS
 
-Start_train = flags.Start_train
+Start_train = FLAGS.Start_train
 log_name = 'model.ckpt'
 
 num_classes = FLAGS.num_classes
