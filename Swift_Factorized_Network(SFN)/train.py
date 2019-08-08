@@ -189,9 +189,12 @@ def run():
         and_val=gt_one_v*prediction_ohe_v
         and_sum=tf.reduce_sum(and_val,[0])
         or_val=tf.to_int32((gt_one_v+prediction_ohe_v)>0.5)
-        or_sum=tf.reduce_sum(apor,axis=[0])
-        T_sum=tf.reduce_sum(gta_v,axis=[0])
-        R_sum = tf.reduce_sum(prediction_ohe_v,axis=[0])		
+        or_sum=tf.reduce_sum(or_val,axis=[0])
+        T_sum=tf.reduce_sum(gt_one_v,axis=[0])
+        R_sum = tf.reduce_sum(prediction_ohe_v,axis=[0])
+        mPrecision=0
+        mRecall_rate=0
+        mIoU=0	
         #Now we need to create a training step function that runs both the train_op, metrics_op and updates the global_step concurrently.
         def train_step(sess, train_op, global_step ,loss=total_loss):
             #Check the time for each sess run
@@ -236,7 +239,7 @@ def run():
             return total_loss,ss
 			
         def eval_step(sess,i ):
-            and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = sess.run([and_sum,or_sum,apors,R_sum])
+            and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch = sess.run([and_sum,or_sum,T_sum,R_sum])
             #Log some information
             logging.info('STEP: %d ',i)
             return  and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch
@@ -246,11 +249,11 @@ def run():
             T_=np.zeros((num_class), dtype=np.float32)			
             R_=np.zeros((num_class), dtype=np.float32)			
             for i in range(math.ceil(len(image_val) / eval_batch)):
-                and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch = eval_step(session,i+1)
+                and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch = eval_step(session,i+1)
                 and_=and_+and_eval_batch
                 or_=or_+or_eval_batch
                 T_=T_+T_eval_batch
-                R_=R_+R_eval_batch				
+                R_=R_+R_eval_batch
             Recall_rate=and_/T_
             Precision=and_/R_
             IoU=and_/or_
@@ -283,7 +286,7 @@ def run():
         with tf.Session(config=config) as sess:
             sess.run(init)
             sess.run([titerator.initializer,viterator.initializer])
-            swiftnetatten.load_weight(sess,'imgnet_resnet18.npz',var1)#load base_net's parameter.
+            sfn.load_weight(sess,'imgnet_resnet18.npz',var1)#load base_net's parameter.
             step = 0;
             if Start_train is not True:
                 #input the checkpoint address,and the step number.
