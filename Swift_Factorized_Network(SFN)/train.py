@@ -242,7 +242,7 @@ def run():
             and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch = sess.run([and_sum,or_sum,T_sum,R_sum])
             #Log some information
             logging.info('STEP: %d ',i)
-            return  and_eval_batch,T_eval_batch,or_eval_batch,R_eval_batch
+            return  and_eval_batch,or_eval_batch,T_eval_batch,R_eval_batch
         def eval(num_class,csvname,session,image_val,eval_batch):
             or_=np.zeros((num_class), dtype=np.float32)
             and_=np.zeros((num_class), dtype=np.float32)			
