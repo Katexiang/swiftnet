@@ -10,4 +10,4 @@ Open CV
 Python 3.6.5
 ```
 ## Note
-In the future, I will update the demo code for change version of swiftnet which possess a higher IoU. And I wll upload the pre-trained parameters of ResNet-18.
+In the future, I will update the demo code for change version of swiftnet which possess a higher IoU. The pre-trained parameters of ResNet-18 is on https://pan.baidu.com/s/16OjEC-GcWvGIj0eWVe9RiQ.
